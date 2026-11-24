@@ -4,7 +4,7 @@ import { useLyrics } from '../features/lyrics'
 import { useCapture } from '../features/capture'
 import { usePitch } from '../features/pitch'
 import { useReview } from '../features/review'
-import type { Song, Take } from '../shared/document'
+import type { Song } from '../shared/document'
 
 export function useWorkspace() {
   const transport = useTransport(songs[0], {
@@ -12,7 +12,7 @@ export function useWorkspace() {
   })
   const lyrics = useLyrics(transport.song, transport.position)
   const pitch = usePitch()
-  const review = useReview(transport.song, lyrics.selected, () => {
+  const review = useReview(transport.song, lyrics.selected, lyrics.words, () => {
     capture.cancelRequest()
     transport.pause()
   })
@@ -26,14 +26,30 @@ export function useWorkspace() {
     },
   })
   const graphRange = computed(() => {
-    if (review.position.value !== null || !transport.isPlaying.value || capture.status.value === 'recording') {
+    // Replaying an old take shows the graph where that take was really sung,
+    // so a recording made at another place is not drawn off-screen.
+    const replay = review.playing.value
+    if (replay) return { start: replay.take.start, end: replay.take.end }
+    if (!transport.isPlaying.value || capture.status.value === 'recording') {
       return lyrics.selected.value ?? { start: 0, end: transport.song.value.duration }
     }
-    return lyrics.active.value ?? lyrics.upcoming.value ?? lyrics.selected.value!
+    return lyrics.active.value ?? lyrics.upcoming.value ?? lyrics.selected.value ?? { start: 0, end: transport.song.value.duration }
   })
   const graphPosition = computed(() => review.position.value ?? transport.position.value)
 
   function finishCapture(position: number): void { void capture.stop(position) }
+
+  /**
+   * An edit changes who owns the words, never where a phrase sits. An active
+   * single-phrase loop simply follows the phrase that is selected now, so the
+   * cycle and the pitch graph stay on current phrase positions.
+   */
+  function afterEdit(changed: boolean) {
+    if (!changed) return
+    capture.cancelRequest()
+    review.stop()
+    if (transport.loop.value) transport.loop.value = lyrics.selected.value
+  }
 
   function selectLine(id: string) {
     const line = lyrics.select(id)
@@ -54,7 +70,7 @@ export function useWorkspace() {
     capture.cancelRequest()
     review.stop()
     transport.setSong(song)
-    lyrics.reset()
+    transport.loop.value = null
   }
 
   function seek(position: number) {
@@ -97,18 +113,58 @@ export function useWorkspace() {
     review.stop()
     transport.pause()
     pitch.clear()
-    void capture.start({ songId: transport.song.value.id, lineId: line.id, range: line }, () => {
+    void capture.start({
+      songId: transport.song.value.id, lineId: line.id, range: line,
+      wordId: line.wordId, wordText: line.text,
+    }, () => {
       transport.seek(line.start)
       return transport.play()
     })
   }
 
-  function listen(take: Take) { void review.listen(take) }
+  function splitAt(at: number): boolean {
+    const line = lyrics.selected.value
+    if (!line) return false
+    const changed = lyrics.split(line.id, at)
+    afterEdit(changed)
+    return changed
+  }
+
+  function rewriteSelected(text: string): boolean {
+    const line = lyrics.selected.value
+    if (!line) return false
+    const changed = lyrics.rewrite(line.id, text)
+    afterEdit(changed)
+    return changed
+  }
+
+  function exchangeWith(otherId: string): boolean {
+    const line = lyrics.selected.value
+    if (!line) return false
+    const changed = lyrics.exchange(line.id, otherId)
+    afterEdit(changed)
+    return changed
+  }
+
+  function undoEdit(): boolean {
+    const changed = lyrics.undo()
+    afterEdit(changed)
+    return changed
+  }
+
+  function resetLyrics(): boolean {
+    const changed = lyrics.resetLyrics()
+    afterEdit(changed)
+    return changed
+  }
 
   watch(transport.position, position => {
     const line = lyrics.selected.value
     if (line && position >= line.end) finishCapture(line.end)
   })
+
+  // Switching songs rebuilds the phrase list asynchronously; pick a fresh loop point.
+  watch(() => transport.song.value.id, () => { transport.loop.value = null })
 
   function handleVisibility() {
     if (!document.hidden) return
@@ -120,6 +176,7 @@ export function useWorkspace() {
 
   return {
     transport, lyrics, pitch, review, capture, graphRange, graphPosition,
-    selectLine, adjacent, selectSong, seek, toggleLoop, togglePlay, toggleRecording, listen,
+    selectLine, adjacent, selectSong, seek, toggleLoop, togglePlay, toggleRecording,
+    splitAt, rewriteSelected, exchangeWith, undoEdit, resetLyrics,
   }
 }

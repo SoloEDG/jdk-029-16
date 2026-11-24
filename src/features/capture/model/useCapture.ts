@@ -7,12 +7,17 @@ interface CaptureTarget {
   songId: string
   lineId: string
   range: TimeRange
+  /** The word that will be sung, frozen so history survives later edits. */
+  wordId: string
+  wordText: string
 }
 
 interface CapturedAudio extends TimeRange {
   audio: Blob
   songId: string
   lineId: string
+  wordId: string
+  wordText: string
 }
 
 interface CaptureEvents {
@@ -96,7 +101,10 @@ export function useCapture(events: CaptureEvents) {
         return
       }
       const audio = toWave(recording.frames, recording.inputStart, duration, stream.sampleRate)
-      await events.onComplete({ audio, start: recording.songStart, end, songId: recording.songId, lineId: recording.lineId })
+      await events.onComplete({
+        audio, start: recording.songStart, end, songId: recording.songId, lineId: recording.lineId,
+        wordId: recording.wordId, wordText: recording.wordText,
+      })
     } catch {
       issue.value = '录音未能保存。'
     } finally {
